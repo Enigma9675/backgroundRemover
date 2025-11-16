@@ -1,3 +1,4 @@
+# main.py (replace your file with this whole version)
 import os
 import sys
 import io
@@ -10,27 +11,34 @@ from importlib import import_module
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 
-# --- Try to import rembg and create a session upfront ---
+# --------- Cache location & model selection ----------
+# Match the path used during build so the model is already present
+os.environ.setdefault("U2NET_HOME", "/app/.u2net")
+
+# Choose model via env: REMBG_MODEL=u2net or u2netp (default: u2netp for speed)
+REMBG_MODEL = os.environ.get("REMBG_MODEL", "u2netp").strip()
+
+# --------- Try to import rembg and create a session upfront ----------
 REMBG_AVAILABLE = False
 REMBG_SESSION = None
 
 try:
     from rembg import remove, new_session
-    REMBG_SESSION = new_session("u2net")  # model name: "u2net", "u2netp", etc.
+    REMBG_SESSION = new_session(REMBG_MODEL)
     REMBG_AVAILABLE = True
 except Exception as _e:
     REMBG_AVAILABLE = False
     REMBG_SESSION = None
 
-# --- Third-party imports used by endpoints ---
+# Third-party libs used by endpoints
 import requests
 from PIL import Image
 
-# --- Flask app ---
+# Flask app
 app = Flask(__name__)
 CORS(app)
 
-# --- Diagnostics helpers ---
+# Diagnostics helpers
 def check_imports(pkgs):
     out = {}
     for name in pkgs:
@@ -50,7 +58,21 @@ def disk_writable():
     except Exception:
         return False
 
-# --- Root health (simple) ---
+# Optional: warm up rembg (loads model into memory)
+def _warmup():
+    if REMBG_SESSION is None:
+        return False
+    try:
+        # 1x1 transparent PNG to trigger the pipeline without payload
+        tiny_png = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8Xw8AAnsB4hU1F1kAAAAASUVORK5CYII=")
+        _ = remove(tiny_png, session=REMBG_SESSION)
+        return True
+    except Exception:
+        return False
+
+WARMED_UP = _warmup()
+
+# Root health (simple)
 @app.route('/', methods=['GET'])
 def root_health():
     return jsonify({
@@ -59,7 +81,7 @@ def root_health():
         'rembg_available': REMBG_AVAILABLE
     })
 
-# --- Detailed health (versions + env + writability) ---
+# Detailed health
 @app.route('/health', methods=['GET'])
 def health():
     imports = check_imports(['flask', 'flask_cors', 'PIL', 'rembg', 'onnxruntime', 'numpy', 'gunicorn', 'requests'])
@@ -67,6 +89,8 @@ def health():
         'service': 'background-removal',
         'status': 'healthy' if REMBG_AVAILABLE else 'degraded',
         'rembg_available': REMBG_AVAILABLE,
+        'rembg_model': REMBG_MODEL,
+        'warmed_up': WARMED_UP,
         'runtime': {
             'python': sys.version.split()[0],
             'platform': platform.platform(),
@@ -82,13 +106,13 @@ def health():
     }
     return jsonify(info), (200 if REMBG_AVAILABLE else 206)
 
-# --- Quick imports endpoint (handy during deploy) ---
+# Quick imports endpoint
 @app.route('/debug/imports', methods=['GET'])
 def debug_imports():
     return jsonify(check_imports(['flask', 'flask_cors', 'PIL', 'rembg', 'onnxruntime', 'numpy', 'gunicorn', 'requests']))
 
-# --- Utilities for image loading ---
-MAX_BYTES = 8 * 1024 * 1024  # 8MB safety limit
+# Utilities for image loading
+MAX_BYTES = 8 * 1024 * 1024  # 8MB safety
 
 def _load_image_from_url(url: str) -> Image.Image:
     r = requests.get(url, timeout=15, stream=True)
@@ -108,7 +132,7 @@ def _load_image_from_data_url(data_url: str) -> Image.Image:
         raise ValueError(f"image too large ({len(raw)} bytes > {MAX_BYTES})")
     return Image.open(io.BytesIO(raw)).convert("RGBA")
 
-# --- Main API: background removal ---
+# Main API
 @app.route('/remove-bg', methods=['POST'])
 def remove_bg():
     if REMBG_SESSION is None:
@@ -137,7 +161,6 @@ def remove_bg():
 
         out_bytes = remove(buf_in.getvalue(), session=REMBG_SESSION)
 
-        # Return as base64 so the client can show/save it immediately
         return jsonify({
             'ok': True,
             'contentType': 'image/png',
@@ -152,7 +175,6 @@ def remove_bg():
         print('remove-bg error:', traceback.format_exc(), flush=True)
         return jsonify({'ok': False, 'error': 'processing_failed', 'message': str(e)}), 500
 
-# --- Local dev entrypoint ---
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', '8000'))
     app.run(host='0.0.0.0', port=port)

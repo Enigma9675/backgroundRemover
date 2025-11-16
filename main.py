@@ -56,7 +56,6 @@ def remove_background():
         
         output_image = remove(
             input_image,
-            model_name=model_name,
             alpha_matting=alpha_matting,
             alpha_matting_foreground_threshold=alpha_matting_foreground_threshold,
             alpha_matting_background_threshold=alpha_matting_background_threshold,

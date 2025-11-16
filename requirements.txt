@@ -1,8 +1,5 @@
 flask>=3.0.0
 flask-cors>=4.0.0
-rembg==2.0.55
-onnxruntime==1.17.1
+rembg>=2.0.55
 pillow>=10.0.0
 gunicorn>=21.2.0
-# Optional (sometimes helps with wheel resolution)
-numpy<2

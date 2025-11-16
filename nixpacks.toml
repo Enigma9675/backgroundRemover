@@ -1,14 +1,14 @@
+[providers]
+python = false
+
 [phases.setup]
-nixPkgs = ["python311"]   # was python313
+nixPkgs = ["python311", "pip"]
 
 [phases.install]
 cmds = [
-    "pip install --upgrade pip",
-    "pip install -r requirements.txt"
+    "python -m pip install --upgrade pip",
+    "python -m pip install -r requirements.txt"
 ]
 
 [start]
-cmd = "gunicorn main:app --bind 0.0.0.0:$PORT"
-
-[variables]
-NIXPACKS_PYTHON_VERSION = "3.11"   # was 3.13
+cmd = "python -m gunicorn main:app --bind 0.0.0.0:$PORT"

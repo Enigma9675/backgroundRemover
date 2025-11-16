@@ -1,14 +1,10 @@
-[providers]
-python = false
-
-[phases.setup]
-nixPkgs = ["python311", "pip"]
-
 [phases.install]
 cmds = [
-    "python -m pip install --upgrade pip",
-    "python -m pip install -r requirements.txt"
+  "pip install --upgrade pip",
+  "pip install -r requirements.txt",
+  # Pre-download the ONNX model into /app/.u2net so it's baked into the image
+  "python - <<'PY'\nimport os\nos.environ['U2NET_HOME']='/app/.u2net'\nos.makedirs('/app/.u2net', exist_ok=True)\nfrom rembg import new_session\n# Use the smaller model for snappy builds, change to 'u2net' if you want full-size\nnew_session('u2netp')\nprint('Model predownloaded to', os.environ['U2NET_HOME'])\nPY"
 ]
 
 [start]
-cmd = "python -m gunicorn main:app --bind 0.0.0.0:$PORT"
+cmd = "gunicorn main:app --bind 0.0.0.0:$PORT"

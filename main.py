@@ -1,75 +1,158 @@
-"""
-Background removal service using rembg
-"""
-
-from flask import Flask, request, jsonify, send_file
-from flask_cors import CORS
-import base64
-from io import BytesIO
-from PIL import Image
 import os
+import sys
+import io
+import base64
+import tempfile
+import traceback
+import platform
+from importlib import import_module
+
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+
+# --- Try to import rembg and create a session upfront ---
+REMBG_AVAILABLE = False
+REMBG_SESSION = None
 
 try:
-    from rembg import remove
+    from rembg import remove, new_session
+    REMBG_SESSION = new_session("u2net")  # model name: "u2net", "u2netp", etc.
     REMBG_AVAILABLE = True
-except ImportError:
+except Exception as _e:
     REMBG_AVAILABLE = False
+    REMBG_SESSION = None
 
+# --- Third-party imports used by endpoints ---
+import requests
+from PIL import Image
+
+# --- Flask app ---
 app = Flask(__name__)
 CORS(app)
 
+# --- Diagnostics helpers ---
+def check_imports(pkgs):
+    out = {}
+    for name in pkgs:
+        try:
+            m = import_module(name)
+            ver = getattr(m, '__version__', 'unknown')
+            out[name] = {'ok': True, 'version': ver}
+        except Exception as e:
+            out[name] = {'ok': False, 'error': str(e)}
+    return out
+
+def disk_writable():
+    try:
+        with tempfile.NamedTemporaryFile(mode='w', delete=True) as f:
+            f.write('ok')
+        return True
+    except Exception:
+        return False
+
+# --- Root health (simple) ---
 @app.route('/', methods=['GET'])
-def health_check():
+def root_health():
     return jsonify({
-        'status': 'ok',
         'service': 'background-removal',
+        'status': 'ok',
         'rembg_available': REMBG_AVAILABLE
     })
 
-@app.route('/remove-bg', methods=['POST', 'OPTIONS'])
-def remove_background():
-    if request.method == 'OPTIONS':
-        return '', 200
-    
-    if not REMBG_AVAILABLE:
-        return jsonify({
-            'error': 'rembg not installed',
-            'message': 'Please install: pip install rembg pillow'
-        }), 500
-    
-    try:
-        data = request.get_json()
-        image_data = data.get('image')
-        model_name = data.get('model', 'u2net')
-        alpha_matting = data.get('alpha_matting', False)
-        alpha_matting_foreground_threshold = data.get('alpha_matting_foreground_threshold', 240)
-        alpha_matting_background_threshold = data.get('alpha_matting_background_threshold', 10)
-        
-        if not image_data:
-            return jsonify({'error': 'No image data provided'}), 400
-        
-        if image_data.startswith('data:'):
-            image_data = image_data.split(',', 1)[1]
-        
-        image_bytes = base64.b64decode(image_data)
-        input_image = Image.open(BytesIO(image_bytes))
-        
-        output_image = remove(
-            input_image,
-            alpha_matting=alpha_matting,
-            alpha_matting_foreground_threshold=alpha_matting_foreground_threshold,
-            alpha_matting_background_threshold=alpha_matting_background_threshold,
-        )
-        
-        output_buffer = BytesIO()
-        output_image.save(output_buffer, format='PNG')
-        output_buffer.seek(0)
-        
-        return send_file(output_buffer, mimetype='image/png', as_attachment=False)
-        
-    except Exception as e:
-        return jsonify({'error': 'Background removal failed', 'message': str(e)}), 500
+# --- Detailed health (versions + env + writability) ---
+@app.route('/health', methods=['GET'])
+def health():
+    imports = check_imports(['flask', 'flask_cors', 'PIL', 'rembg', 'onnxruntime', 'numpy', 'gunicorn', 'requests'])
+    info = {
+        'service': 'background-removal',
+        'status': 'healthy' if REMBG_AVAILABLE else 'degraded',
+        'rembg_available': REMBG_AVAILABLE,
+        'runtime': {
+            'python': sys.version.split()[0],
+            'platform': platform.platform(),
+        },
+        'imports': imports,
+        'disk_writable': disk_writable(),
+        'env': {
+            'PORT': os.environ.get('PORT'),
+            'U2NET_HOME': os.environ.get('U2NET_HOME'),
+            'XDG_CACHE_HOME': os.environ.get('XDG_CACHE_HOME'),
+            'PYTHONHASHSEED': os.environ.get('PYTHONHASHSEED'),
+        }
+    }
+    return jsonify(info), (200 if REMBG_AVAILABLE else 206)
 
+# --- Quick imports endpoint (handy during deploy) ---
+@app.route('/debug/imports', methods=['GET'])
+def debug_imports():
+    return jsonify(check_imports(['flask', 'flask_cors', 'PIL', 'rembg', 'onnxruntime', 'numpy', 'gunicorn', 'requests']))
+
+# --- Utilities for image loading ---
+MAX_BYTES = 8 * 1024 * 1024  # 8MB safety limit
+
+def _load_image_from_url(url: str) -> Image.Image:
+    r = requests.get(url, timeout=15, stream=True)
+    r.raise_for_status()
+    content = r.content
+    if len(content) > MAX_BYTES:
+        raise ValueError(f"image too large ({len(content)} bytes > {MAX_BYTES})")
+    return Image.open(io.BytesIO(content)).convert("RGBA")
+
+def _load_image_from_data_url(data_url: str) -> Image.Image:
+    try:
+        header, b64 = data_url.split(',', 1)
+        raw = base64.b64decode(b64)
+    except Exception:
+        raise ValueError("invalid data URL")
+    if len(raw) > MAX_BYTES:
+        raise ValueError(f"image too large ({len(raw)} bytes > {MAX_BYTES})")
+    return Image.open(io.BytesIO(raw)).convert("RGBA")
+
+# --- Main API: background removal ---
+@app.route('/remove-bg', methods=['POST'])
+def remove_bg():
+    if REMBG_SESSION is None:
+        return jsonify({
+            'ok': False,
+            'error': 'rembg_not_available',
+            'message': 'rembg/onnxruntime failed to initialize on server'
+        }), 500
+
+    data = request.get_json(silent=True) or {}
+    image_url = data.get('imageUrl')
+    image_data = data.get('imageData')
+
+    if not image_url and not image_data:
+        return jsonify({'ok': False, 'error': 'bad_request', 'message': 'Provide imageUrl or imageData'}), 400
+
+    try:
+        if image_url:
+            img = _load_image_from_url(image_url)
+        else:
+            img = _load_image_from_data_url(image_data)
+
+        buf_in = io.BytesIO()
+        img.save(buf_in, format='PNG')
+        buf_in.seek(0)
+
+        out_bytes = remove(buf_in.getvalue(), session=REMBG_SESSION)
+
+        # Return as base64 so the client can show/save it immediately
+        return jsonify({
+            'ok': True,
+            'contentType': 'image/png',
+            'data': base64.b64encode(out_bytes).decode('ascii')
+        }), 200
+
+    except requests.exceptions.RequestException as e:
+        return jsonify({'ok': False, 'error': 'fetch_failed', 'message': str(e)}), 400
+    except ValueError as e:
+        return jsonify({'ok': False, 'error': 'validation', 'message': str(e)}), 400
+    except Exception as e:
+        print('remove-bg error:', traceback.format_exc(), flush=True)
+        return jsonify({'ok': False, 'error': 'processing_failed', 'message': str(e)}), 500
+
+# --- Local dev entrypoint ---
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 8080))
+    port = int(os.environ.get('PORT', '8000'))
     app.run(host='0.0.0.0', port=port)

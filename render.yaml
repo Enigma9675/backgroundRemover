@@ -2,7 +2,7 @@ services:
   - type: web
     name: rembg-api
     runtime: docker
-    dockerfilePath: ./Dockerfile.render
+    dockerfilePath: ./Dockerfile
     plan: free
     envVars:
       - key: REMBG_MODEL

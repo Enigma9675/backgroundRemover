@@ -1,10 +1,7 @@
-# Rembg Background Removal API - Docker Image
-# Optimized for GPU inference with CUDA support
+# Rembg Background Removal API - Render Free Tier
+# Optimized for memory constraints (512MB RAM on free tier)
 
-FROM nvidia/cuda:11.8-cudnn8-runtime-ubuntu22.04
-
-# Prevent interactive prompts during package installation
-ENV DEBIAN_FRONTEND=noninteractive
+FROM python:3.11-slim
 
 # Set Python environment variables
 ENV PYTHONDONTWRITEBYTECODE=1
@@ -12,43 +9,39 @@ ENV PYTHONUNBUFFERED=1
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
-    python3 \
-    python3-pip \
-    python3-venv \
     libgl1-mesa-glx \
     libglib2.0-0 \
-    libsm6 \
-    libxext6 \
-    libxrender-dev \
-    wget \
     curl \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && apt-get clean
 
 # Create app directory
 WORKDIR /app
 
-# Copy requirements first for better caching
-COPY requirements.txt .
+# Copy requirements
+COPY requirements-render.txt requirements.txt
 
 # Install Python dependencies
-RUN pip3 install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Pre-download the BiRefNet model during build
-RUN python3 -c "from rembg import new_session; new_session('birefnet-general')"
+# Pre-download the u2net model (smaller, works on free tier)
+# BiRefNet is too large for 512MB RAM
+RUN python -c "from rembg import new_session; new_session('u2net')"
 
 # Copy application code
 COPY app.py .
 
-# Create non-root user for security
+# Create non-root user
 RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
 USER appuser
 
-# Expose port
-EXPOSE 5000
+# Render uses PORT env variable
+ENV PORT=10000
+EXPOSE 10000
 
 # Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD curl -f http://localhost:5000/health || exit 1
+HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
+    CMD curl -f http://localhost:${PORT}/health || exit 1
 
-# Run with gunicorn for production
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "2", "--timeout", "120", "app:app"]
+# Run with gunicorn - single worker to save memory
+CMD gunicorn --bind 0.0.0.0:${PORT} --workers 1 --timeout 300 --keep-alive 5 app:app

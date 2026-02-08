@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: rembg-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile.render
+    plan: free
+    envVars:
+      - key: REMBG_MODEL
+        value: u2net
+      - key: MAX_IMAGE_SIZE
+        value: "2048"
+      - key: PORT
+        value: "10000"
+    healthCheckPath: /health

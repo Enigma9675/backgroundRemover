@@ -1,0 +1,17 @@
+# Rembg API - Render Free Tier (memory optimized)
+
+flask>=3.0.0
+flask-cors>=4.0.0
+gunicorn>=21.0.0
+
+# Background removal - base package only
+rembg>=2.0.50
+
+# Image processing
+Pillow>=10.0.0
+
+# HTTP requests
+requests>=2.31.0
+
+# ONNX Runtime CPU (lighter than GPU version)
+onnxruntime>=1.16.0

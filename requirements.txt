@@ -1,0 +1,19 @@
+# Rembg Background Removal API Dependencies
+
+# Web framework
+flask>=3.0.0
+flask-cors>=4.0.0
+gunicorn>=21.0.0
+
+# Background removal
+rembg[gpu]>=2.0.50
+
+# Image processing
+Pillow>=10.0.0
+
+# HTTP requests (for fetching images from URLs)
+requests>=2.31.0
+
+# ONNX Runtime with GPU support (for faster inference)
+# Note: onnxruntime-gpu requires CUDA. If no GPU, use onnxruntime instead.
+onnxruntime-gpu>=1.16.0
